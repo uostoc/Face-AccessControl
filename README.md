@@ -56,6 +56,42 @@ python -m src.main run-camera --show-window
 
 如果 CPU 识别卡顿，可以降低 `config/config.yaml` 中的 `recognition.detection_fps`，例如改成 `3` 到 `5`。
 
+## 管理后台
+
+启动 FastAPI 后端：
+
+```powershell
+python -m src.main run-admin
+```
+
+后端默认地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+启动 React 前端：
+
+```powershell
+cd web
+npm install
+npm run dev
+```
+
+前端默认地址：
+
+```text
+http://127.0.0.1:5173
+```
+
+当前管理后台包含：
+
+- 仪表盘统计。
+- 人员管理。
+- 识别日志查询。
+- 安全事件复核。
+- 系统配置查看。
+
 检查 ONNX Runtime 是否可用 GPU：
 
 ```powershell

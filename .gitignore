@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
+*.log
 .pytest_cache/
 .venv/
 data/
-
+web/node_modules/
+web/dist/

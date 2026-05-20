@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-db", help="Initialize SQLite database")
     subparsers.add_parser("check-gpu", help="Show ONNX Runtime execution providers")
+    run_admin = subparsers.add_parser("run-admin", help="Run FastAPI admin backend")
+    run_admin.add_argument("--host", default="127.0.0.1")
+    run_admin.add_argument("--port", type=int, default=8000)
+    run_admin.add_argument("--reload", action="store_true")
 
     add_person = subparsers.add_parser("add-person", help="Add or update a person")
     add_person.add_argument("--person-id", required=True)
@@ -354,6 +358,18 @@ def command_check_gpu() -> None:
         print("CUDAExecutionProvider is NOT available. The project will fall back to CPU.")
 
 
+def command_run_admin(config: dict[str, Any], args: argparse.Namespace) -> None:
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise RuntimeError("uvicorn is required. Run `pip install -r requirements.txt`.") from exc
+
+    from src.admin.app import create_app
+
+    app = create_app(config)
+    uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
+
+
 def _draw_face_result(
     frame: Any,
     bbox: tuple[int, int, int, int],
@@ -374,16 +390,70 @@ def _draw_face_result(
     label_name = person_name or "unknown"
     label = f"{result_type}: {label_name} {similarity:.2f}"
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    cv2.putText(
-        frame,
-        label,
-        (x1, max(20, y1 - 8)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        color,
-        2,
-        cv2.LINE_AA,
-    )
+    _draw_unicode_text(frame, label, (x1, max(0, y1 - 34)), color)
+
+
+def _draw_unicode_text(frame: Any, text: str, origin: tuple[int, int], color: tuple[int, int, int]) -> None:
+    try:
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        import cv2
+
+        cv2.putText(
+            frame,
+            _ascii_fallback(text),
+            (origin[0], max(20, origin[1] + 24)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+        return
+
+    font = _load_display_font(26)
+    if font is None:
+        cv2.putText(
+            frame,
+            _ascii_fallback(text),
+            (origin[0], max(20, origin[1] + 24)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+        return
+
+    x, y = origin
+    image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(image)
+    rgb_color = (color[2], color[1], color[0])
+    draw.text((x, y), text, font=font, fill=rgb_color)
+    frame[:] = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+
+
+def _load_display_font(size: int) -> Any:
+    from pathlib import Path
+
+    from PIL import ImageFont
+
+    candidates = [
+        Path("C:/Windows/Fonts/msyh.ttc"),
+        Path("C:/Windows/Fonts/msyhbd.ttc"),
+        Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("C:/Windows/Fonts/simsun.ttc"),
+    ]
+    for font_path in candidates:
+        if font_path.exists():
+            return ImageFont.truetype(str(font_path), size)
+    return None
+
+
+def _ascii_fallback(text: str) -> str:
+    return text.encode("ascii", errors="replace").decode("ascii")
 
 
 def main() -> None:
@@ -395,6 +465,8 @@ def main() -> None:
         command_init_db(config)
     elif args.command == "check-gpu":
         command_check_gpu()
+    elif args.command == "run-admin":
+        command_run_admin(config, args)
     elif args.command == "add-person":
         command_add_person(config, args)
     elif args.command == "enroll-face":

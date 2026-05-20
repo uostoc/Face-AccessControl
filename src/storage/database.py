@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 def utc_now() -> str:
@@ -45,7 +45,7 @@ class Database:
     def connect(self) -> sqlite3.Connection:
         if str(self.path) == ":memory:":
             if self._memory_connection is None:
-                self._memory_connection = sqlite3.connect(":memory:")
+                self._memory_connection = sqlite3.connect(":memory:", check_same_thread=False)
                 self._memory_connection.row_factory = sqlite3.Row
                 self._memory_connection.execute("PRAGMA journal_mode=MEMORY")
             return self._memory_connection
@@ -291,3 +291,117 @@ class Database:
                     utc_now(),
                 ),
             )
+
+    def list_persons(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    person_id, name, role, department, status, valid_from,
+                    valid_until, consent_status, created_at, updated_at
+                FROM persons
+                ORDER BY updated_at DESC, person_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_person(self, person_id: str) -> dict[str, Any] | None:
+        with self.session() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    person_id, name, role, department, status, valid_from,
+                    valid_until, consent_status, created_at, updated_at
+                FROM persons
+                WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_recognition_logs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, event_time, camera_id, location, person_id, person_name,
+                    similarity, result_type, snapshot_path, track_id
+                FROM recognition_logs
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_security_events(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, event_type, event_time, person_id, person_name, camera_id,
+                    location, confidence, snapshot_path, review_status, reviewer,
+                    review_comment, created_at
+                FROM security_events
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_security_event_review(
+        self,
+        event_id: int,
+        review_status: str,
+        reviewer: str | None = None,
+        review_comment: str | None = None,
+    ) -> dict[str, Any] | None:
+        if review_status not in {"confirmed", "rejected"}:
+            raise ValueError("review_status must be confirmed or rejected")
+
+        with self.session() as conn:
+            conn.execute(
+                """
+                UPDATE security_events
+                SET review_status = ?, reviewer = ?, review_comment = ?
+                WHERE id = ?
+                """,
+                (review_status, reviewer, review_comment, event_id),
+            )
+            row = conn.execute(
+                """
+                SELECT
+                    id, event_type, event_time, person_id, person_name, camera_id,
+                    location, confidence, snapshot_path, review_status, reviewer,
+                    review_comment, created_at
+                FROM security_events
+                WHERE id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_summary_stats(self) -> dict[str, int]:
+        with self.session() as conn:
+            person_count = conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
+            log_count = conn.execute("SELECT COUNT(*) FROM recognition_logs").fetchone()[0]
+            pending_event_count = conn.execute(
+                "SELECT COUNT(*) FROM security_events WHERE review_status = 'pending'"
+            ).fetchone()[0]
+            today_late_return_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM security_events
+                WHERE event_type = 'late_return'
+                  AND DATE(event_time) = DATE('now')
+                """
+            ).fetchone()[0]
+        return {
+            "person_count": int(person_count),
+            "log_count": int(log_count),
+            "pending_event_count": int(pending_event_count),
+            "today_late_return_count": int(today_late_return_count),
+        }
