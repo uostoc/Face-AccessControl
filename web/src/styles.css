@@ -114,12 +114,24 @@ p {
 }
 
 .inline-form,
+.enroll-form,
 .review-bar {
   display: grid;
   grid-template-columns: repeat(7, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 16px;
   align-items: end;
+}
+
+.enroll-form {
+  grid-template-columns: minmax(220px, 1.3fr) minmax(140px, 0.8fr) minmax(260px, 1.4fr) 140px;
+}
+
+.enroll-form label {
+  display: grid;
+  gap: 6px;
+  color: #465366;
+  font-weight: 700;
 }
 
 .review-bar {
@@ -227,6 +239,14 @@ th {
   margin-bottom: 14px;
 }
 
+.success {
+  border-radius: 6px;
+  background: #ddf4e8;
+  color: #1c6b4b;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
 .config-view {
   margin: 0;
   border-radius: 8px;
@@ -252,7 +272,8 @@ th {
   }
 
   .stats-grid,
-  .inline-form {
+  .inline-form,
+  .enroll-form {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -265,6 +286,7 @@ th {
   nav,
   .stats-grid,
   .inline-form,
+  .enroll-form,
   .review-bar {
     grid-template-columns: 1fr;
   }

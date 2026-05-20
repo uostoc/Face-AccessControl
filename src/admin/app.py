@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.admin.schemas import PersonPayload, ReviewPayload
+from src.face.recognizer import InsightFaceRecognizer
 from src.storage.database import Database, Person
 
 
@@ -49,6 +52,59 @@ def create_app(config: dict[str, Any]) -> FastAPI:
         person = db.get_person(person_id)
         assert person is not None
         return person
+
+    @app.post("/api/persons/{person_id}/face-images")
+    def upload_face_image(
+        person_id: str,
+        angle: str = Form(default="front"),
+        image: UploadFile = File(...),
+    ) -> dict[str, Any]:
+        person = db.get_person(person_id)
+        if person is None:
+            raise HTTPException(status_code=404, detail="person not found")
+
+        suffix = Path(image.filename or "").suffix.lower() or ".jpg"
+        if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            raise HTTPException(status_code=400, detail="unsupported image file type")
+
+        person_dir = Path(config["storage"]["registered_face_dir"]) / person_id
+        person_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        image_path = person_dir / f"{angle}_{timestamp}{suffix}"
+
+        try:
+            image_path.write_bytes(image.file.read())
+        finally:
+            image.file.close()
+
+        recognizer = _build_recognizer(config)
+        try:
+            face = recognizer.extract_from_image(image_path)
+        except (RuntimeError, ValueError) as exc:
+            image_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        db.add_embedding(
+            person_id=person_id,
+            image_path=str(image_path),
+            embedding=face.embedding,
+            angle=angle,
+            quality_score=face.quality_score,
+            model_name=config["recognition"]["model_name"],
+        )
+        return {
+            "person_id": person_id,
+            "image_path": str(image_path),
+            "angle": angle,
+            "quality_score": face.quality_score,
+            "model_name": config["recognition"]["model_name"],
+        }
+
+    @app.get("/api/persons/{person_id}/embeddings")
+    def list_person_embeddings(person_id: str) -> list[dict[str, Any]]:
+        if db.get_person(person_id) is None:
+            raise HTTPException(status_code=404, detail="person not found")
+        return db.list_person_embeddings(person_id)
 
     @app.get("/api/recognition-logs")
     def list_recognition_logs(
@@ -101,4 +157,12 @@ def _to_person(payload: PersonPayload) -> Person:
         valid_from=payload.valid_from,
         valid_until=payload.valid_until,
         consent_status=payload.consent_status,
+    )
+
+
+def _build_recognizer(config: dict[str, Any]) -> InsightFaceRecognizer:
+    return InsightFaceRecognizer(
+        config["recognition"]["model_name"],
+        det_size=int(config["recognition"]["det_size"]),
+        providers=list(config["recognition"]["providers"]),
     )

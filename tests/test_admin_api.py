@@ -1,7 +1,10 @@
 import importlib.util
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from src.config import DEFAULT_CONFIG
+from src.face.recognizer import DetectedFace
 from src.storage.database import Database
 
 
@@ -20,6 +23,7 @@ class AdminApiTest(unittest.TestCase):
             "storage": {
                 **DEFAULT_CONFIG["storage"],
                 "database_path": ":memory:",
+                "registered_face_dir": "data/test_registered_faces",
             },
         }
         app = create_app(config)
@@ -61,6 +65,56 @@ class AdminApiTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["review_status"], "confirmed")
+
+    def test_face_image_upload_missing_person_returns_404(self):
+        response = self.client.post(
+            "/api/persons/MISSING/face-images",
+            data={"angle": "front"},
+            files={"image": ("face.jpg", b"fake-image", "image/jpeg")},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_face_image_upload_success_writes_embedding_metadata(self):
+        person_payload = {
+            "person_id": "STU2",
+            "name": "Bob",
+            "role": "student",
+            "department": "Test",
+            "status": "active",
+        }
+        self.client.post("/api/persons", json=person_payload)
+
+        class FakeRecognizer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def extract_from_image(self, image_path):
+                self.last_image_path = Path(image_path)
+                return DetectedFace(
+                    bbox=(0, 0, 100, 100),
+                    embedding=[1.0, 0.0],
+                    quality_score=0.98,
+                )
+
+        with patch("src.admin.app.InsightFaceRecognizer", FakeRecognizer):
+            response = self.client.post(
+                "/api/persons/STU2/face-images",
+                data={"angle": "front"},
+                files={"image": ("face.jpg", b"fake-image", "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["person_id"], "STU2")
+        self.assertEqual(body["angle"], "front")
+        self.assertEqual(body["quality_score"], 0.98)
+
+        embeddings_response = self.client.get("/api/persons/STU2/embeddings")
+        self.assertEqual(embeddings_response.status_code, 200)
+        embeddings = embeddings_response.json()
+        self.assertEqual(len(embeddings), 1)
+        self.assertNotIn("embedding", embeddings[0])
+        self.assertEqual(embeddings[0]["angle"], "front")
 
 
 if __name__ == "__main__":

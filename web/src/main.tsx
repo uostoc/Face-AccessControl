@@ -4,7 +4,7 @@ import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000/api";
 
-type View = "dashboard" | "persons" | "logs" | "events" | "configs";
+type View = "dashboard" | "persons" | "enroll" | "logs" | "events" | "configs";
 
 type Summary = {
   person_count: number;
@@ -50,11 +50,29 @@ type SecurityEvent = {
   review_comment?: string | null;
 };
 
+type FaceEmbeddingMeta = {
+  id: number;
+  person_id: string;
+  image_path: string;
+  angle: string;
+  quality_score: number;
+  model_name: string;
+  created_at: string;
+};
+
+type EnrollResult = {
+  person_id: string;
+  image_path: string;
+  angle: string;
+  quality_score: number;
+  model_name: string;
+};
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    ...init
-  });
+  const headers = init?.body instanceof FormData
+    ? init?.headers
+    : { "Content-Type": "application/json", ...(init?.headers ?? {}) };
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || response.statusText);
@@ -72,6 +90,7 @@ function App() {
         <nav>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>仪表盘</button>
           <button className={view === "persons" ? "active" : ""} onClick={() => setView("persons")}>人员管理</button>
+          <button className={view === "enroll" ? "active" : ""} onClick={() => setView("enroll")}>注册采集</button>
           <button className={view === "logs" ? "active" : ""} onClick={() => setView("logs")}>识别日志</button>
           <button className={view === "events" ? "active" : ""} onClick={() => setView("events")}>安全事件</button>
           <button className={view === "configs" ? "active" : ""} onClick={() => setView("configs")}>系统配置</button>
@@ -80,11 +99,120 @@ function App() {
       <main className="main">
         {view === "dashboard" && <Dashboard />}
         {view === "persons" && <Persons />}
+        {view === "enroll" && <Enroll />}
         {view === "logs" && <Logs />}
         {view === "events" && <Events />}
         {view === "configs" && <Configs />}
       </main>
     </div>
+  );
+}
+
+function Enroll() {
+  const [persons, setPersons] = useState<Person[]>([]);
+  const [personId, setPersonId] = useState("");
+  const [angle, setAngle] = useState("front");
+  const [file, setFile] = useState<File | null>(null);
+  const [embeddings, setEmbeddings] = useState<FaceEmbeddingMeta[]>([]);
+  const [result, setResult] = useState<EnrollResult | null>(null);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    api<Person[]>("/persons")
+      .then((items) => {
+        setPersons(items);
+        if (items.length > 0) {
+          setPersonId(items[0].person_id);
+        }
+      })
+      .catch((error) => setError(error.message));
+  }, []);
+
+  useEffect(() => {
+    if (!personId) {
+      setEmbeddings([]);
+      return;
+    }
+    api<FaceEmbeddingMeta[]>(`/persons/${personId}/embeddings`)
+      .then(setEmbeddings)
+      .catch((error) => setError(error.message));
+  }, [personId]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!personId || !file) return;
+    setSubmitting(true);
+    setError("");
+    setResult(null);
+
+    const formData = new FormData();
+    formData.append("angle", angle);
+    formData.append("image", file);
+
+    try {
+      const uploadResult = await api<EnrollResult>(`/persons/${personId}/face-images`, {
+        method: "POST",
+        body: formData
+      });
+      setResult(uploadResult);
+      setFile(null);
+      const latest = await api<FaceEmbeddingMeta[]>(`/persons/${personId}/embeddings`);
+      setEmbeddings(latest);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <section>
+      <Header title="注册采集" subtitle="选择人员并上传一张人脸图片生成特征" />
+      {error && <ErrorState message={error} />}
+      {result && (
+        <div className="success">
+          注册成功：{result.angle}，质量分 {formatNumber(result.quality_score)}，模型 {result.model_name}
+        </div>
+      )}
+      <form className="enroll-form" onSubmit={submit}>
+        <label>
+          人员
+          <select value={personId} onChange={(event) => setPersonId(event.target.value)} required>
+            {persons.map((person) => (
+              <option key={person.person_id} value={person.person_id}>
+                {person.name} ({person.person_id})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          角度
+          <select value={angle} onChange={(event) => setAngle(event.target.value)}>
+            <option value="front">front</option>
+            <option value="left_45">left_45</option>
+            <option value="right_45">right_45</option>
+            <option value="mask">mask</option>
+          </select>
+        </label>
+        <label>
+          图片
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <button type="submit" disabled={!personId || !file || submitting}>
+          {submitting ? "注册中..." : "上传并注册"}
+        </button>
+      </form>
+      <DataTable
+        columns={["created_at", "angle", "quality_score", "model_name", "image_path"]}
+        rows={embeddings.map((item) => ({ ...item, quality_score: formatNumber(item.quality_score) }))}
+        empty="该人员暂无注册特征"
+      />
+    </section>
   );
 }
 

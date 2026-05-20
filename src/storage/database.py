@@ -225,6 +225,20 @@ class Database:
             for row in rows
         ]
 
+    def list_person_embeddings(self, person_id: str) -> list[dict[str, Any]]:
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, person_id, image_path, angle, quality_score, model_name, created_at
+                FROM face_embeddings
+                WHERE person_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (person_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_recognition_log(
         self,
         camera_id: str,
