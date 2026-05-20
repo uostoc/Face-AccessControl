@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.onnx_runtime import preload_onnxruntime_dlls, resolve_providers
+
 
 @dataclass(frozen=True)
 class DetectedFace:
@@ -13,11 +15,19 @@ class DetectedFace:
 
 
 class InsightFaceRecognizer:
-    def __init__(self, model_name: str = "buffalo_l") -> None:
+    def __init__(
+        self,
+        model_name: str = "buffalo_l",
+        det_size: int = 320,
+        providers: list[str] | None = None,
+    ) -> None:
         self.model_name = model_name
+        self.det_size = det_size
+        self.providers = resolve_providers(providers or ["CUDAExecutionProvider", "CPUExecutionProvider"])
         self._app: Any | None = None
 
     def load(self) -> None:
+        preload_onnxruntime_dlls()
         try:
             from insightface.app import FaceAnalysis
         except ImportError as exc:
@@ -26,8 +36,8 @@ class InsightFaceRecognizer:
                 "to enable real face recognition."
             ) from exc
 
-        self._app = FaceAnalysis(name=self.model_name)
-        self._app.prepare(ctx_id=0, det_size=(640, 640))
+        self._app = FaceAnalysis(name=self.model_name, providers=self.providers)
+        self._app.prepare(ctx_id=0, det_size=(self.det_size, self.det_size))
 
     def extract_from_image(self, image_path: str | Path) -> DetectedFace:
         try:
@@ -68,4 +78,3 @@ class InsightFaceRecognizer:
 def _area(bbox: tuple[int, int, int, int]) -> int:
     x1, y1, x2, y2 = bbox
     return max(0, x2 - x1) * max(0, y2 - y1)
-

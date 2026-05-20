@@ -11,9 +11,13 @@ recognition:
   vote_window: 5
   vote_confirm_count: 3
   max_faces_per_frame: 3
-  detection_fps: 8
+  detection_fps: 3
   embedding_interval_seconds: 1.5
   model_name: buffalo_l
+  det_size: 320
+  providers:
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
 
 curfew:
   enabled: true

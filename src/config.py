@@ -21,6 +21,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "detection_fps": 8,
         "embedding_interval_seconds": 1.5,
         "model_name": "buffalo_l",
+        "det_size": 320,
+        "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
     },
     "curfew": {
         "enabled": True,
@@ -71,6 +73,7 @@ def load_config(path: str | Path = "config/config.yaml") -> dict[str, Any]:
 def _load_simple_yaml(path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {}
     current_section: dict[str, Any] | None = None
+    current_list_key: str | None = None
 
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.rstrip()
@@ -81,13 +84,24 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
             section_name = line[:-1].strip()
             current_section = {}
             result[section_name] = current_section
+            current_list_key = None
             continue
 
         if current_section is None or ":" not in line:
+            stripped = line.strip()
+            if current_section is not None and current_list_key and stripped.startswith("- "):
+                current_section[current_list_key].append(_parse_scalar(stripped[2:].strip()))
             continue
 
         key, raw_value = line.split(":", 1)
-        current_section[key.strip()] = _parse_scalar(raw_value.strip())
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value == "":
+            current_section[key] = []
+            current_list_key = key
+        else:
+            current_section[key] = _parse_scalar(raw_value)
+            current_list_key = None
 
     return result
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from src.events.decision import EventDecisionEngine
 from src.face.matcher import FaceMatcher
 from src.face.quality import FaceQualityEvaluator
 from src.face.recognizer import InsightFaceRecognizer
+from src.onnx_runtime import missing_cuda_dlls, preload_onnxruntime_dlls, resolve_providers
 from src.storage.database import Database, Person
 from src.tracking.tracker import CentroidTracker
 from src.tracking.voter import MultiFrameVoter
@@ -24,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-db", help="Initialize SQLite database")
+    subparsers.add_parser("check-gpu", help="Show ONNX Runtime execution providers")
 
     add_person = subparsers.add_parser("add-person", help="Add or update a person")
     add_person.add_argument("--person-id", required=True)
@@ -86,7 +89,7 @@ def command_add_person(config: dict[str, Any], args: argparse.Namespace) -> None
 def command_enroll_face(config: dict[str, Any], args: argparse.Namespace) -> None:
     db = database_from_config(config)
     db.init_schema()
-    recognizer = InsightFaceRecognizer(config["recognition"]["model_name"])
+    recognizer = build_recognizer(config)
     face = recognizer.extract_from_image(args.image)
     db.add_embedding(
         person_id=args.person_id,
@@ -111,7 +114,7 @@ def command_run_camera(config: dict[str, Any], args: argparse.Namespace) -> None
     db = database_from_config(config)
     db.init_schema()
 
-    recognizer = InsightFaceRecognizer(config["recognition"]["model_name"])
+    recognizer = build_recognizer(config)
     quality = FaceQualityEvaluator()
     matcher = FaceMatcher(
         db.load_active_embeddings(),
@@ -147,6 +150,32 @@ def command_run_camera(config: dict[str, Any], args: argparse.Namespace) -> None
     detection_interval = 1.0 / float(config["recognition"]["detection_fps"])
     last_detection = 0.0
     processed_frames = 0
+    last_overlays: list[tuple[tuple[int, int, int, int], str, str | None, float]] = []
+
+    def process_frame(frame: Any) -> list[tuple[tuple[int, int, int, int], str, str | None, float]]:
+        return _process_recognition_frame(
+            frame=frame,
+            recognizer=recognizer,
+            quality=quality,
+            matcher=matcher,
+            voter=voter,
+            tracker=tracker,
+            decision_engine=decision_engine,
+            alerts=alerts,
+            db=db,
+            camera_id=args.camera_id,
+            location=args.location,
+            max_faces=max_faces,
+        )
+
+    if cv2 is not None:
+        _run_camera_with_async_preview(
+            capture=capture,
+            process_frame=process_frame,
+            detection_interval=detection_interval,
+            max_frames=args.max_frames,
+        )
+        return
 
     try:
         for frame in capture.frames():
@@ -158,64 +187,171 @@ def command_run_camera(config: dict[str, Any], args: argparse.Namespace) -> None
                 continue
             last_detection = now_monotonic
 
-            faces = recognizer.detect(frame)
-            faces.sort(key=lambda item: _area(item.bbox), reverse=True)
-            selected_faces = faces[:max_faces]
-            track_ids = tracker.assign([face.bbox for face in selected_faces])
-            for face, track_id in zip(selected_faces, track_ids):
-                quality_result = quality.evaluate(face.bbox, face.quality_score)
-                if not quality_result.accepted:
-                    db.add_recognition_log(
-                        camera_id=args.camera_id,
-                        location=args.location,
-                        result_type="low_quality",
-                        track_id=track_id,
-                    )
-                    continue
-
-                match = matcher.match(face.embedding)
-                vote = voter.add(track_id, match)
-                decision = decision_engine.decide(vote, datetime.now())
-                db.add_recognition_log(
-                    camera_id=args.camera_id,
-                    location=args.location,
-                    result_type=decision.log_type,
-                    person_id=vote.person_id,
-                    person_name=vote.person_name,
-                    similarity=vote.similarity,
-                    track_id=track_id,
-                )
-
-                if decision.event_type:
-                    db.add_security_event(
-                        event_type=decision.event_type,
-                        camera_id=args.camera_id,
-                        location=args.location,
-                        person_id=vote.person_id,
-                        person_name=vote.person_name,
-                        confidence=vote.similarity,
-                    )
-                    alerts.notify(decision.event_type)
-
-                if cv2 is not None:
-                    _draw_face_result(frame, face.bbox, vote.result_type, vote.person_name, vote.similarity)
-
-            if cv2 is not None:
-                cv2.imshow("Face Access Control", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+            last_overlays = process_frame(frame)
 
             if args.max_frames and processed_frames >= args.max_frames:
                 break
     finally:
         capture.release()
-        if cv2 is not None:
-            cv2.destroyAllWindows()
 
 
 def _area(bbox: tuple[int, int, int, int]) -> int:
     x1, y1, x2, y2 = bbox
     return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def _process_recognition_frame(
+    frame: Any,
+    recognizer: InsightFaceRecognizer,
+    quality: FaceQualityEvaluator,
+    matcher: FaceMatcher,
+    voter: MultiFrameVoter,
+    tracker: CentroidTracker,
+    decision_engine: EventDecisionEngine,
+    alerts: AlertService,
+    db: Database,
+    camera_id: str,
+    location: str,
+    max_faces: int,
+) -> list[tuple[tuple[int, int, int, int], str, str | None, float]]:
+    faces = recognizer.detect(frame)
+    faces.sort(key=lambda item: _area(item.bbox), reverse=True)
+    selected_faces = faces[:max_faces]
+    track_ids = tracker.assign([face.bbox for face in selected_faces])
+    overlays: list[tuple[tuple[int, int, int, int], str, str | None, float]] = []
+
+    for face, track_id in zip(selected_faces, track_ids):
+        quality_result = quality.evaluate(face.bbox, face.quality_score)
+        if not quality_result.accepted:
+            db.add_recognition_log(
+                camera_id=camera_id,
+                location=location,
+                result_type="low_quality",
+                track_id=track_id,
+            )
+            overlays.append((face.bbox, "low_quality", None, face.quality_score))
+            continue
+
+        match = matcher.match(face.embedding)
+        vote = voter.add(track_id, match)
+        decision = decision_engine.decide(vote, datetime.now())
+        db.add_recognition_log(
+            camera_id=camera_id,
+            location=location,
+            result_type=decision.log_type,
+            person_id=vote.person_id,
+            person_name=vote.person_name,
+            similarity=vote.similarity,
+            track_id=track_id,
+        )
+
+        if decision.event_type:
+            db.add_security_event(
+                event_type=decision.event_type,
+                camera_id=camera_id,
+                location=location,
+                person_id=vote.person_id,
+                person_name=vote.person_name,
+                confidence=vote.similarity,
+            )
+            alerts.notify(decision.event_type)
+
+        overlays.append((face.bbox, vote.result_type, vote.person_name, vote.similarity))
+
+    return overlays
+
+
+def _run_camera_with_async_preview(
+    capture: CameraCapture,
+    process_frame: Any,
+    detection_interval: float,
+    max_frames: int | None,
+) -> None:
+    import cv2
+
+    lock = threading.Lock()
+    worker: threading.Thread | None = None
+    worker_busy = False
+    last_detection = 0.0
+    processed_frames = 0
+    latest_overlays: list[tuple[tuple[int, int, int, int], str, str | None, float]] = []
+
+    def run_worker(frame_copy: Any) -> None:
+        nonlocal latest_overlays, worker_busy
+        try:
+            overlays = process_frame(frame_copy)
+            with lock:
+                latest_overlays = overlays
+        finally:
+            with lock:
+                worker_busy = False
+
+    try:
+        for frame in capture.frames():
+            processed_frames += 1
+            with lock:
+                overlays = list(latest_overlays)
+                busy = worker_busy
+
+            for overlay in overlays:
+                _draw_face_result(frame, *overlay)
+
+            cv2.imshow("Face Access Control", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_detection >= detection_interval and not busy:
+                last_detection = now_monotonic
+                with lock:
+                    worker_busy = True
+                worker = threading.Thread(target=run_worker, args=(frame.copy(),), daemon=True)
+                worker.start()
+
+            if max_frames and processed_frames >= max_frames:
+                break
+    finally:
+        capture.release()
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=2.0)
+        cv2.destroyAllWindows()
+
+
+def build_recognizer(config: dict[str, Any]) -> InsightFaceRecognizer:
+    return InsightFaceRecognizer(
+        config["recognition"]["model_name"],
+        det_size=int(config["recognition"]["det_size"]),
+        providers=list(config["recognition"]["providers"]),
+    )
+
+
+def command_check_gpu() -> None:
+    preload_onnxruntime_dlls()
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError("onnxruntime or onnxruntime-gpu is not installed") from exc
+
+    providers = ort.get_available_providers()
+    requested = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    resolved = resolve_providers(requested)
+    print("ONNX Runtime available providers:")
+    for provider in providers:
+        print(f"- {provider}")
+    print("Project resolved providers:")
+    for provider in resolved:
+        print(f"- {provider}")
+
+    missing = missing_cuda_dlls()
+    if missing:
+        print("Missing CUDA/cuDNN DLLs:")
+        for dll_name in missing:
+            print(f"- {dll_name}")
+
+    if "CUDAExecutionProvider" in providers and "CUDAExecutionProvider" in resolved:
+        print("CUDAExecutionProvider is available. GPU inference can be used.")
+    else:
+        print("CUDAExecutionProvider is NOT available. The project will fall back to CPU.")
 
 
 def _draw_face_result(
@@ -257,6 +393,8 @@ def main() -> None:
 
     if args.command == "init-db":
         command_init_db(config)
+    elif args.command == "check-gpu":
+        command_check_gpu()
     elif args.command == "add-person":
         command_add_person(config, args)
     elif args.command == "enroll-face":

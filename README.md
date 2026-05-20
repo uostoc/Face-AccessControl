@@ -54,6 +54,37 @@ python -m src.main run-camera --show-window
 
 预览窗口中按 `q` 退出。
 
+如果 CPU 识别卡顿，可以降低 `config/config.yaml` 中的 `recognition.detection_fps`，例如改成 `3` 到 `5`。
+
+检查 ONNX Runtime 是否可用 GPU：
+
+```powershell
+python -m src.main check-gpu
+```
+
+如果输出包含 `CUDAExecutionProvider`，说明当前 venv 可以使用 NVIDIA GPU 推理。
+
+## GPU 推理
+
+GPU 推理需要 NVIDIA 显卡、可用显卡驱动、CUDA/cuDNN 运行库，以及 `onnxruntime-gpu`。
+
+建议在 venv 中只保留一个 ONNX Runtime 包：
+
+```powershell
+pip uninstall -y onnxruntime onnxruntime-gpu
+pip install -r requirements-gpu.txt
+python -m src.main check-gpu
+```
+
+`config/config.yaml` 默认优先使用 CUDA，失败时回退 CPU：
+
+```yaml
+recognition:
+  providers:
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
+```
+
 ## 说明
 
 `insightface` 和 `onnxruntime` 是实际人脸识别所需依赖。如果本机未安装，仍可以运行数据库、匹配、投票和事件判定测试。
