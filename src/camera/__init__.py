@@ -1,0 +1,2 @@
+"""Camera capture components."""
+

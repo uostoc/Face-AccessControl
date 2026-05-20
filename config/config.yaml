@@ -1,0 +1,33 @@
+camera:
+  source: 0
+  fps: 30
+  width: 1280
+  height: 720
+  reconnect_interval_seconds: 5
+
+recognition:
+  confirm_threshold: 0.60
+  suspect_threshold: 0.40
+  vote_window: 5
+  vote_confirm_count: 3
+  max_faces_per_frame: 3
+  detection_fps: 8
+  embedding_interval_seconds: 1.5
+  model_name: buffalo_l
+
+curfew:
+  enabled: true
+  curfew_time: "22:30"
+  grace_period_minutes: 10
+  duplicate_window_minutes: 10
+
+event:
+  stranger_duplicate_window_minutes: 5
+  snapshot_retention_days: 7
+  enable_led_alert: true
+  enable_buzzer_alert: false
+
+storage:
+  database_path: data/runtime/face_access.db
+  snapshot_dir: data/snapshots
+  registered_face_dir: data/registered_faces

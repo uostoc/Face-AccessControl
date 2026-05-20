@@ -1,0 +1,2 @@
+"""Tracking and voting components."""
+
