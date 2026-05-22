@@ -4,7 +4,7 @@ import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000/api";
 
-type View = "dashboard" | "persons" | "enroll" | "logs" | "events" | "configs";
+type View = "dashboard" | "persons" | "logs" | "events" | "configs";
 
 type Summary = {
   person_count: number;
@@ -90,7 +90,6 @@ function App() {
         <nav>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>仪表盘</button>
           <button className={view === "persons" ? "active" : ""} onClick={() => setView("persons")}>人员管理</button>
-          <button className={view === "enroll" ? "active" : ""} onClick={() => setView("enroll")}>注册采集</button>
           <button className={view === "logs" ? "active" : ""} onClick={() => setView("logs")}>识别日志</button>
           <button className={view === "events" ? "active" : ""} onClick={() => setView("events")}>安全事件</button>
           <button className={view === "configs" ? "active" : ""} onClick={() => setView("configs")}>系统配置</button>
@@ -99,120 +98,11 @@ function App() {
       <main className="main">
         {view === "dashboard" && <Dashboard />}
         {view === "persons" && <Persons />}
-        {view === "enroll" && <Enroll />}
         {view === "logs" && <Logs />}
         {view === "events" && <Events />}
         {view === "configs" && <Configs />}
       </main>
     </div>
-  );
-}
-
-function Enroll() {
-  const [persons, setPersons] = useState<Person[]>([]);
-  const [personId, setPersonId] = useState("");
-  const [angle, setAngle] = useState("front");
-  const [file, setFile] = useState<File | null>(null);
-  const [embeddings, setEmbeddings] = useState<FaceEmbeddingMeta[]>([]);
-  const [result, setResult] = useState<EnrollResult | null>(null);
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    api<Person[]>("/persons")
-      .then((items) => {
-        setPersons(items);
-        if (items.length > 0) {
-          setPersonId(items[0].person_id);
-        }
-      })
-      .catch((error) => setError(error.message));
-  }, []);
-
-  useEffect(() => {
-    if (!personId) {
-      setEmbeddings([]);
-      return;
-    }
-    api<FaceEmbeddingMeta[]>(`/persons/${personId}/embeddings`)
-      .then(setEmbeddings)
-      .catch((error) => setError(error.message));
-  }, [personId]);
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!personId || !file) return;
-    setSubmitting(true);
-    setError("");
-    setResult(null);
-
-    const formData = new FormData();
-    formData.append("angle", angle);
-    formData.append("image", file);
-
-    try {
-      const uploadResult = await api<EnrollResult>(`/persons/${personId}/face-images`, {
-        method: "POST",
-        body: formData
-      });
-      setResult(uploadResult);
-      setFile(null);
-      const latest = await api<FaceEmbeddingMeta[]>(`/persons/${personId}/embeddings`);
-      setEmbeddings(latest);
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <section>
-      <Header title="注册采集" subtitle="选择人员并上传一张人脸图片生成特征" />
-      {error && <ErrorState message={error} />}
-      {result && (
-        <div className="success">
-          注册成功：{result.angle}，质量分 {formatNumber(result.quality_score)}，模型 {result.model_name}
-        </div>
-      )}
-      <form className="enroll-form" onSubmit={submit}>
-        <label>
-          人员
-          <select value={personId} onChange={(event) => setPersonId(event.target.value)} required>
-            {persons.map((person) => (
-              <option key={person.person_id} value={person.person_id}>
-                {person.name} ({person.person_id})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          角度
-          <select value={angle} onChange={(event) => setAngle(event.target.value)}>
-            <option value="front">front</option>
-            <option value="left_45">left_45</option>
-            <option value="right_45">right_45</option>
-            <option value="mask">mask</option>
-          </select>
-        </label>
-        <label>
-          图片
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-          />
-        </label>
-        <button type="submit" disabled={!personId || !file || submitting}>
-          {submitting ? "注册中..." : "上传并注册"}
-        </button>
-      </form>
-      <DataTable
-        columns={["created_at", "angle", "quality_score", "model_name", "image_path"]}
-        rows={embeddings.map((item) => ({ ...item, quality_score: formatNumber(item.quality_score) }))}
-        empty="该人员暂无注册特征"
-      />
-    </section>
   );
 }
 
@@ -253,51 +143,245 @@ function Persons() {
   }), []);
   const [persons, setPersons] = useState<Person[]>([]);
   const [form, setForm] = useState<Person>(emptyForm);
+  const [selectedPersonId, setSelectedPersonId] = useState("");
+  const [detailForm, setDetailForm] = useState<Person | null>(null);
+  const [embeddings, setEmbeddings] = useState<FaceEmbeddingMeta[]>([]);
+  const [angle, setAngle] = useState("front");
+  const [file, setFile] = useState<File | null>(null);
+  const [enrollResult, setEnrollResult] = useState<EnrollResult | null>(null);
   const [error, setError] = useState("");
+  const [detailError, setDetailError] = useState("");
+  const [savingDetail, setSavingDetail] = useState(false);
+  const [submittingFace, setSubmittingFace] = useState(false);
 
-  const load = () => api<Person[]>("/persons").then(setPersons).catch((error) => setError(error.message));
+  const selectedPerson = persons.find((person) => person.person_id === selectedPersonId) ?? null;
+
+  const load = async (preferredPersonId = selectedPersonId) => {
+    try {
+      const items = await api<Person[]>("/persons");
+      setPersons(items);
+      if (preferredPersonId && items.some((person) => person.person_id === preferredPersonId)) {
+        setSelectedPersonId(preferredPersonId);
+      } else if (items.length > 0) {
+        setSelectedPersonId(items[0].person_id);
+      } else {
+        setSelectedPersonId("");
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   useEffect(() => {
     void load();
   }, []);
 
+  useEffect(() => {
+    if (!selectedPerson) {
+      setDetailForm(null);
+      setEmbeddings([]);
+      setDetailError("");
+      setEnrollResult(null);
+      return;
+    }
+    setDetailForm({ ...selectedPerson });
+    setDetailError("");
+    setEnrollResult(null);
+    api<FaceEmbeddingMeta[]>(`/persons/${selectedPerson.person_id}/embeddings`)
+      .then(setEmbeddings)
+      .catch((error) => setDetailError(error instanceof Error ? error.message : String(error)));
+  }, [selectedPersonId, selectedPerson]);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
-    await api<Person>("/persons", { method: "POST", body: JSON.stringify(form) });
-    setForm(emptyForm);
-    await load();
+    try {
+      const person = await api<Person>("/persons", { method: "POST", body: JSON.stringify(form) });
+      setForm(emptyForm);
+      await load(person.person_id);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const saveDetail = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!detailForm) return;
+    setSavingDetail(true);
+    setDetailError("");
+    try {
+      const person = await api<Person>(`/persons/${detailForm.person_id}`, {
+        method: "PUT",
+        body: JSON.stringify(detailForm)
+      });
+      setDetailForm(person);
+      await load(person.person_id);
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingDetail(false);
+    }
+  };
+
+  const uploadFace = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedPersonId || !file) return;
+    setSubmittingFace(true);
+    setDetailError("");
+    setEnrollResult(null);
+
+    const formData = new FormData();
+    formData.append("angle", angle);
+    formData.append("image", file);
+
+    try {
+      const uploadResult = await api<EnrollResult>(`/persons/${selectedPersonId}/face-images`, {
+        method: "POST",
+        body: formData
+      });
+      setEnrollResult(uploadResult);
+      setFile(null);
+      const latest = await api<FaceEmbeddingMeta[]>(`/persons/${selectedPersonId}/embeddings`);
+      setEmbeddings(latest);
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmittingFace(false);
+    }
   };
 
   return (
     <section>
-      <Header title="人员管理" subtitle="维护人员基础信息，照片特征继续使用 enroll-face 注册" />
+      <Header title="人员管理" subtitle="维护人员资料、注册采集人脸图片并查看已生成特征" />
       {error && <ErrorState message={error} />}
-      <form className="inline-form" onSubmit={submit}>
-        <input placeholder="学号/工号" value={form.person_id} onChange={(e) => setForm({ ...form, person_id: e.target.value })} required />
-        <input placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-        <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-          <option value="student">student</option>
-          <option value="teacher">teacher</option>
-          <option value="admin">admin</option>
-          <option value="visitor">visitor</option>
-        </select>
-        <input placeholder="院系/部门" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
-        <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-          <option value="active">active</option>
-          <option value="visitor">visitor</option>
-          <option value="expired">expired</option>
-          <option value="graduated">graduated</option>
-          <option value="disabled">disabled</option>
-        </select>
-        <input placeholder="有效期至" value={form.valid_until ?? ""} onChange={(e) => setForm({ ...form, valid_until: e.target.value })} />
-        <button type="submit">保存人员</button>
-      </form>
-      <DataTable
-        columns={["person_id", "name", "role", "department", "status", "valid_until"]}
-        rows={persons}
-        empty="暂无人员数据"
-      />
+      <div className="person-workspace">
+        <div className="person-list-pane">
+          <form className="inline-form person-create-form" onSubmit={submit}>
+            <input placeholder="学号/工号" value={form.person_id} onChange={(e) => setForm({ ...form, person_id: e.target.value })} required />
+            <input placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+              <option value="student">student</option>
+              <option value="teacher">teacher</option>
+              <option value="admin">admin</option>
+              <option value="visitor">visitor</option>
+            </select>
+            <input placeholder="院系/部门" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
+            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              <option value="active">active</option>
+              <option value="visitor">visitor</option>
+              <option value="expired">expired</option>
+              <option value="graduated">graduated</option>
+              <option value="disabled">disabled</option>
+            </select>
+            <input placeholder="有效期至" value={form.valid_until ?? ""} onChange={(e) => setForm({ ...form, valid_until: e.target.value })} />
+            <button type="submit">新增人员</button>
+          </form>
+          <DataTable
+            columns={["person_id", "name", "role", "department", "status", "valid_until"]}
+            rows={persons}
+            empty="暂无人员数据"
+            selectedKey={selectedPersonId}
+            getRowKey={(row, index) => String(row.person_id ?? index)}
+            onRowClick={(row) => setSelectedPersonId(String(row.person_id))}
+          />
+        </div>
+
+        <aside className="person-detail-pane">
+          {!detailForm && <div className="state">请选择一名人员查看详情和注册采集</div>}
+          {detailForm && (
+            <>
+              <div className="detail-heading">
+                <div>
+                  <h2>{detailForm.name || detailForm.person_id}</h2>
+                  <p>{detailForm.person_id}</p>
+                </div>
+                <Status value={detailForm.status} />
+              </div>
+              {detailError && <ErrorState message={detailError} />}
+              {enrollResult && (
+                <div className="success">
+                  注册成功：{enrollResult.angle}，质量分 {formatNumber(enrollResult.quality_score)}，模型 {enrollResult.model_name}
+                </div>
+              )}
+              <form className="detail-form" onSubmit={saveDetail}>
+                <label>
+                  学号/工号
+                  <input value={detailForm.person_id} disabled />
+                </label>
+                <label>
+                  姓名
+                  <input value={detailForm.name} onChange={(event) => setDetailForm({ ...detailForm, name: event.target.value })} required />
+                </label>
+                <label>
+                  角色
+                  <select value={detailForm.role} onChange={(event) => setDetailForm({ ...detailForm, role: event.target.value })}>
+                    <option value="student">student</option>
+                    <option value="teacher">teacher</option>
+                    <option value="admin">admin</option>
+                    <option value="visitor">visitor</option>
+                  </select>
+                </label>
+                <label>
+                  院系/部门
+                  <input value={detailForm.department} onChange={(event) => setDetailForm({ ...detailForm, department: event.target.value })} />
+                </label>
+                <label>
+                  状态
+                  <select value={detailForm.status} onChange={(event) => setDetailForm({ ...detailForm, status: event.target.value })}>
+                    <option value="active">active</option>
+                    <option value="visitor">visitor</option>
+                    <option value="expired">expired</option>
+                    <option value="graduated">graduated</option>
+                    <option value="disabled">disabled</option>
+                  </select>
+                </label>
+                <label>
+                  有效期至
+                  <input value={detailForm.valid_until ?? ""} onChange={(event) => setDetailForm({ ...detailForm, valid_until: event.target.value })} />
+                </label>
+                <label>
+                  授权状态
+                  <select value={detailForm.consent_status} onChange={(event) => setDetailForm({ ...detailForm, consent_status: event.target.value })}>
+                    <option value="granted">granted</option>
+                    <option value="pending">pending</option>
+                    <option value="revoked">revoked</option>
+                  </select>
+                </label>
+                <button type="submit" disabled={savingDetail}>{savingDetail ? "保存中..." : "保存资料"}</button>
+              </form>
+
+              <form className="enroll-form detail-enroll-form" onSubmit={uploadFace}>
+                <label>
+                  角度
+                  <select value={angle} onChange={(event) => setAngle(event.target.value)}>
+                    <option value="front">front</option>
+                    <option value="left_45">left_45</option>
+                    <option value="right_45">right_45</option>
+                    <option value="mask">mask</option>
+                  </select>
+                </label>
+                <label>
+                  图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <button type="submit" disabled={!file || submittingFace}>
+                  {submittingFace ? "注册中..." : "上传并注册"}
+                </button>
+              </form>
+
+              <DataTable
+                columns={["created_at", "angle", "quality_score", "model_name", "image_path"]}
+                rows={embeddings.map((item) => ({ ...item, quality_score: formatNumber(item.quality_score) }))}
+                empty="该人员暂无注册特征"
+              />
+            </>
+          )}
+        </aside>
+      </div>
     </section>
   );
 }
@@ -416,7 +500,21 @@ function Stat({ label, value, tone }: { label: string; value: number; tone: stri
   );
 }
 
-function DataTable({ columns, rows, empty }: { columns: string[]; rows: Record<string, unknown>[]; empty: string }) {
+function DataTable({
+  columns,
+  rows,
+  empty,
+  selectedKey,
+  getRowKey,
+  onRowClick
+}: {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  empty: string;
+  selectedKey?: string;
+  getRowKey?: (row: Record<string, unknown>, index: number) => string;
+  onRowClick?: (row: Record<string, unknown>) => void;
+}) {
   return (
     <div className="table-wrap">
       <table>
@@ -424,11 +522,18 @@ function DataTable({ columns, rows, empty }: { columns: string[]; rows: Record<s
           <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => (
-            <tr key={String(row.id ?? row.person_id ?? index)}>
-              {columns.map((column) => <td key={column}>{String(row[column] ?? "")}</td>)}
-            </tr>
-          ))}
+          {rows.map((row, index) => {
+            const rowKey = getRowKey ? getRowKey(row, index) : String(row.id ?? row.person_id ?? index);
+            return (
+              <tr
+                key={rowKey}
+                className={`${onRowClick ? "clickable-row" : ""} ${selectedKey === rowKey ? "selected-row" : ""}`}
+                onClick={() => onRowClick?.(row)}
+              >
+                {columns.map((column) => <td key={column}>{String(row[column] ?? "")}</td>)}
+              </tr>
+            );
+          })}
           {rows.length === 0 && <tr><td colSpan={columns.length} className="empty">{empty}</td></tr>}
         </tbody>
       </table>

@@ -115,6 +115,7 @@ p {
 
 .inline-form,
 .enroll-form,
+.detail-form,
 .review-bar {
   display: grid;
   grid-template-columns: repeat(7, minmax(120px, 1fr));
@@ -134,6 +135,68 @@ p {
   font-weight: 700;
 }
 
+.person-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.person-list-pane,
+.person-detail-pane {
+  min-width: 0;
+}
+
+.person-create-form {
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+}
+
+.person-detail-pane {
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+  box-shadow: 0 1px 3px rgba(18, 27, 40, 0.08);
+}
+
+.detail-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.detail-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.detail-heading p {
+  margin-top: 4px;
+}
+
+.detail-form {
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 18px;
+}
+
+.detail-form label {
+  display: grid;
+  gap: 6px;
+  color: #465366;
+  font-weight: 700;
+}
+
+.detail-form button {
+  align-self: end;
+}
+
+.detail-enroll-form {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(220px, 1.3fr) 140px;
+  padding-top: 16px;
+  border-top: 1px solid #e7ebf0;
+}
+
 .review-bar {
   grid-template-columns: 90px minmax(220px, 420px);
   align-items: center;
@@ -146,6 +209,11 @@ select {
   border-radius: 6px;
   padding: 0 10px;
   background: #ffffff;
+}
+
+input:disabled {
+  background: #eef2f6;
+  color: #687386;
 }
 
 button {
@@ -192,6 +260,15 @@ th {
   color: #465366;
   background: #f8fafc;
   font-weight: 700;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover td,
+.selected-row td {
+  background: #edf7f3;
 }
 
 .actions {
@@ -273,7 +350,18 @@ th {
 
   .stats-grid,
   .inline-form,
-  .enroll-form {
+  .enroll-form,
+  .person-workspace {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .person-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .person-create-form,
+  .detail-form,
+  .detail-enroll-form {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -287,6 +375,8 @@ th {
   .stats-grid,
   .inline-form,
   .enroll-form,
+  .detail-form,
+  .detail-enroll-form,
   .review-bar {
     grid-template-columns: 1fr;
   }
